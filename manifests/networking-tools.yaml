@@ -25,3 +25,5 @@ packages:
   # Advanced custom networking calculations
   # https://github.com/coreos/fedora-coreos-tracker/issues/1460
   - ipcalc
+  # for configuring the network interfaces automatically
+  - cloud-init

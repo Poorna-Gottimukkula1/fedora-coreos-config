@@ -282,6 +282,12 @@
         "sourcerpm": "cloud-utils"
       }
     },
+    "cloud-init": {
+      "evra": "23.2.1-1.fc39.noarch",
+      "metadata": {
+        "sourcerpm": "cloud-init"
+      }
+    },
     "conmon": {
       "evra": "2:2.1.10-1.fc39.ppc64le",
       "metadata": {

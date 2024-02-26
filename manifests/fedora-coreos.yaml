@@ -158,8 +158,9 @@ exclude-packages:
   - python
   - python2
   - python2-libs
-  - python3
-  - python3-libs
+  # python3* required by cloud-init package.
+  # - python3 
+  # - python3-libs
   - perl
   - perl-interpreter
   - nodejs
