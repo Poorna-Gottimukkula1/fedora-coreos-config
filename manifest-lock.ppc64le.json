@@ -1771,13 +1771,13 @@
       }
     },
     "lvm2": {
-      "evra": "2.03.23-1.fc40.ppc64le",
+      "evra": "2.03.24-2.fc41.ppc64le",
       "metadata": {
         "sourcerpm": "lvm2"
       }
     },
     "lvm2-libs": {
-      "evra": "2.03.23-1.fc40.ppc64le",
+      "evra": "2.03.24-2.fc41.ppc64le",
       "metadata": {
         "sourcerpm": "lvm2"
       }
