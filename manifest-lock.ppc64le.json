@@ -457,13 +457,13 @@
       }
     },
     "device-mapper-event": {
-      "evra": "1.02.197-1.fc40.ppc64le",
+      "evra": "1.02.199-4.fc41.ppc64le",
       "metadata": {
         "sourcerpm": "lvm2"
       }
     },
     "device-mapper-event-libs": {
-      "evra": "1.02.197-1.fc40.ppc64le",
+      "evra": "1.02.199-4.fc41.ppc64le",
       "metadata": {
         "sourcerpm": "lvm2"
       }
