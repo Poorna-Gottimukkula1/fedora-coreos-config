@@ -5,7 +5,7 @@ set -euo pipefail
 
 dnf -y install dnf-plugins-core
 # We want to avoid a 7 day cycle for e.g. new ostree etc.
-dnf config-manager --set-enabled updates-testing
+dnf config-manager setopt updates-testing.enabled=1
 
 dn=$(dirname "$0")
 tmpd=$(mktemp -d) && trap 'rm -rf ${tmpd}' EXIT
@@ -27,15 +27,21 @@ brs=$(grep -v '^#' "${dn}"/buildroot-buildreqs.txt)
  echo "${brs}" | xargs dnf download --source
  # rebuild the SRPM for this arch; see
  # https://bugzilla.redhat.com/show_bug.cgi?id=1402784#c6
+ # Add workaround if on F42 for https://github.com/coreos/fedora-coreos-tracker/issues/1901
+ source /etc/os-release
+ workaround=""
+ if [ "${VERSION_ID}" == "42" ]; then
+    workaround="--noclean"
+ fi
  find . -name '*.src.rpm' -print0 | xargs -0n 1 rpmbuild -rs --nodeps \
-    -D "%_topdir $PWD/rpmbuild" -D "%_tmppath %{_topdir}/tmp"
+    -D "%_topdir $PWD/rpmbuild" -D "%_tmppath %{_topdir}/tmp" ${workaround}
  dnf builddep -y rpmbuild/SRPMS/*.src.rpm)
 rm -rf "${tmpd:?}"/*
 
 echo "Installing build dependencies from canonical spec files"
 specs=$(grep -v '^#' "${dn}"/buildroot-specs.txt)
 (cd "${tmpd}" && echo "${specs}" | xargs curl -L --remote-name-all)
-(cd "${tmpd}" && find . -type f -print0 | xargs -0 dnf -y builddep --spec)
+(cd "${tmpd}" && find . -type f -print0 | xargs -0 dnf -y builddep)
 rm -rf "${tmpd:?}"/*
 
 echo "Installing test dependencies from canonical upstream files"

@@ -25,7 +25,8 @@ set -xeuo pipefail
 # shellcheck disable=SC1091
 . "$KOLA_EXT_DATA/commonlib.sh"
 
-runascoreuserscript='
+container=$(get_fedora_container_ref)
+runascoreuserscript="
 #!/bin/bash
 set -euxo pipefail
 
@@ -33,21 +34,23 @@ set -euxo pipefail
 # NOTE: we may want to not build this in the future and run
 #       from a common testutils container. See
 #       https://github.com/coreos/coreos-assembler/issues/1645
-cd $(mktemp -d)
+cd \$(mktemp -d)
 cat <<EOF > Containerfile
-FROM quay.io/fedora/fedora:39
+FROM $container
+RUN rm -f /etc/yum.repos.d/*.repo \
+&& curl -L https://raw.githubusercontent.com/coreos/fedora-coreos-config/testing-devel/fedora-archive.repo -o /etc/yum.repos.d/fedora-archive.repo
 RUN dnf -y update \
 && dnf -y install systemd httpd \
 && dnf clean all \
 && systemctl enable httpd
-ENTRYPOINT [ "/sbin/init" ]
+ENTRYPOINT [ \"/sbin/init\" ]
 EOF
 podman build -t httpd .
 
 # Run systemd container
-# Pass `-t` so systemd will print logs so `podman logs` will work
+# Pass '-t' so systemd will print logs so 'podman logs' will work
 podman run -t -d --name httpd --publish 8080:80 httpd
-'
+"
 
 runascoreuser() {
     # NOTE: If we don't use `| cat` the output won't get copied
@@ -66,10 +69,6 @@ main() {
     sleep 5
 
     retryflag="--retry-all-errors"
-    # --retry-all-errors flag passed to curl is not available on RHEL8
-    if is_rhcos8; then
-        retryflag="--retry-connrefused"
-    fi
     # Try to grab the web page. Retry as it might not be up fully yet.
     if ! curl --silent --show-error --retry 5 ${retryflag} http://localhost:8080 >/dev/null; then
         runascoreuser podman logs httpd

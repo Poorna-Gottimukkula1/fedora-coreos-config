@@ -53,12 +53,13 @@ set -eux -o pipefail
 
 . /etc/os-release # for $VERSION_ID
 
-need_zincati_restart='false'
+need_restart='false'
+arch=$(arch)
 
 # delete the disabling of updates that was done by the test framework
 if [ -f /etc/zincati/config.d/90-disable-auto-updates.toml ]; then
     rm -f /etc/zincati/config.d/90-disable-auto-updates.toml
-    need_zincati_restart='true'
+    need_restart='true'
 fi
 
 # Early `next` releases before [1] had auto-updates disabled too. Let's
@@ -66,18 +67,23 @@ fi
 # [1] https://github.com/coreos/fedora-coreos-config/commit/99eab318998441760cca224544fc713651f7a16d
 if [ -f /etc/zincati/config.d/90-disable-on-non-production-stream.toml ]; then
     rm -f /etc/zincati/config.d/90-disable-on-non-production-stream.toml
-    need_zincati_restart='true'
+    need_restart='true'
 fi
 
-get_booted_deployment_json() {
-    rpm-ostree status  --json | jq -r '.deployments[] | select(.booted == true)'
-}
-version=$(get_booted_deployment_json | jq -r '.version')
-stream=$(get_booted_deployment_json | jq -r '.["base-commit-meta"]["fedora-coreos.stream"]')
+booted_deployment_json=$(rpm-ostree status  --json | \
+                         jq -r '.deployments[] | select(.booted == true)')
+version=$(jq -r '.version' <<< "${booted_deployment_json}")
+stream=$(jq -r '.["base-commit-meta"]["fedora-coreos.stream"]' <<< "${booted_deployment_json}")
+if [ "$stream" == "null" ]; then
+    # On a container based deployment we don't have the fedora coreos stream
+    # in the same place it used to be. Try to grab it from the new place.
+    ostree_manifest=$(jq -r '.["base-commit-meta"]["ostree.manifest"]' <<< "${booted_deployment_json}")
+    stream=$(jq -r '.annotations | .["fedora-coreos.stream"]' <<< "${ostree_manifest}")
+fi
 
 # Pick up the last release for the current stream from the update server
 test -f /srv/updateinfo.json || \
-    curl -L "https://updates.coreos.fedoraproject.org/v1/graph?basearch=$(arch)&stream=${stream}&rollout_wariness=0" > /srv/updateinfo.json
+    curl -L "https://updates.coreos.fedoraproject.org/v1/graph?basearch=${arch}&stream=${stream}&rollout_wariness=0&oci=true" > /srv/updateinfo.json
 last_release=$(jq -r .nodes[-1].version /srv/updateinfo.json)
 last_release_index=$(jq '.nodes | length-1' /srv/updateinfo.json)
 latest_edge=$(jq -r .edges[0][1] /srv/updateinfo.json)
@@ -107,35 +113,129 @@ grab-gpg-keys() {
     # https://github.com/coreos/fedora-coreos-tracker/issues/749
     max_version=${target_version:0:2} # i.e. 36, 37, 38, etc..
     for ver in $(seq $VERSION_ID $max_version); do
-        test -e "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-${ver}-primary" && continue
-        curl -L "https://src.fedoraproject.org/rpms/fedora-repos/raw/rawhide/f/RPM-GPG-KEY-fedora-${ver}-primary" | \
-            sudo tee "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-${ver}-primary"
-        sudo chcon -v --reference="/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-${VERSION_ID}-primary" "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-${ver}-primary"
+        file="/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-${ver}-primary"
+        if [ ! -e $file ]; then
+            need_restart='true'
+            curl -L "https://src.fedoraproject.org/rpms/fedora-repos/raw/rawhide/f/RPM-GPG-KEY-fedora-${ver}-primary" | \
+                sudo tee $file
+            sudo chcon -v --reference="/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-${VERSION_ID}-primary" $file
+        fi
     done
-    # restart Zincati in case the process had been kicked off earlier
-    # than this script ran.
-    need_zincati_restart='true'
 }
 
 fix-update-url() {
     # We switched to non stg URL in zincati v0.0.10 [1]. For older clients
     # we need to update the runtime configuration of zincati to get past the problem.
     # [1] https://github.com/coreos/zincati/commit/1d73801ccd015cdce89f082cb1eeb9b4b8335760
-    cat <<'EOF' > /run/zincati/config.d/50-fedora-coreos-cincinnati.toml
+    file='/etc/zincati/config.d/50-fedora-coreos-cincinnati.toml'
+    if [ ! -e $file ]; then
+        need_restart='true'
+        cat > $file <<'EOF'
 [cincinnati]
 base_url= "https://updates.coreos.fedoraproject.org"
 EOF
-    need_zincati_restart='true'
+    fi
 }
 
 fix-allow-downgrade() {
     # Older FCOS will complain about an upgrade target being 'chronologically older than current'
     # This is documented in https://github.com/coreos/fedora-coreos-tracker/issues/481
     # We can workaround the problem via a config dropin:
-    cat <<'EOF' > /run/zincati/config.d/99-fedora-coreos-allow-downgrade.toml
+    file='/etc/zincati/config.d/99-fedora-coreos-allow-downgrade.toml'
+    if [ ! -e $file ]; then
+        need_restart='true'
+        cat > $file <<'EOF'
 updates.allow_downgrade = true
 EOF
-    need_zincati_restart='true'
+    fi
+}
+
+move-to-cgroups-v2() {
+    # When upgrading to latest F41+ the system won't even boot on cgroups v1
+    if grep -q unified_cgroup_hierarchy /proc/cmdline; then
+        systemctl stop zincati
+        rpm-ostree cancel
+        rpm-ostree kargs --delete=systemd.unified_cgroup_hierarchy
+        need_restart='true'
+    fi
+}
+
+# We need to drop the rollback deployment. During upgrade
+# `...-> 40.20240906.1.0 (A)-> 41.20241109.1.0 (B)-> 42.20241114.91.0 (C)`
+# 1) A->B, A has the unfixed ostree, the upgrade will copy dtb files
+# to `/boot/ostree` both for current A and new B with wrong label
+# 2) B->C, B has the fixed ostree, the upgrade will prune A, leave B
+# with wrong label, and new C with correct label
+# 3) Finaly booting C and will check that B has the wrong label
+# In this case we need to drop the rollback before checking.
+#
+# If then upgrade to newer D, the upgrade will prune B (wrong label),
+# leave C with correct label, and new D with correct label. (We
+# should remove the drop under this case)
+#
+# https://github.com/coreos/fedora-coreos-tracker/issues/1808
+#
+# NOTE: we can drop this once moved to F43.
+drop_rollback_on_aarch64() {
+    # The dtb copy issue was only ever an issue ever on aarch64
+    [ "${arch}" != 'aarch64' ] && return
+    echo "Dropping rollback deployment because it could have mislabeled dtb files"
+    rpm-ostree cleanup -r
+}
+
+selinux-sanity-check() {
+    # Drop the rooback on aarch64 before checking.
+    drop_rollback_on_aarch64
+    # Verify SELinux labels are sane. Migration scripts should have cleaned
+    # up https://github.com/coreos/fedora-coreos-tracker/issues/1772
+    unlabeled="$(find /sysroot -context '*unlabeled_t*' -print0 | xargs --null -I{} ls -ldZ '{}')"
+    if [ -n "${unlabeled}" ]; then
+        fatal "Some unlabeled files were found"
+    fi
+    mislabeled="$(restorecon -vnr /var/ /etc/ /usr/ /boot/)"
+    if [ -n "${mislabeled}" ]; then
+        # Exceptions for files that could be wrong (sometimes upgrades are messy)
+        # - Would relabel /var/lib/cni from system_u:object_r:var_lib_t:s0 to system_u:object_r:container_var_lib_t:s0
+        # - Would relabel /etc/selinux/targeted/semanage.read.LOCK from system_u:object_r:semanage_trans_lock_t:s0 to system_u:object_r:selinux_config_t:s0
+        # - Would relabel /etc/selinux/targeted/semanage.trans.LOCK from system_u:object_r:semanage_trans_lock_t:s0 to system_u:object_r:selinux_config_t:s0
+        # - Would relabel /etc/systemd/journald.conf.d from system_u:object_r:etc_t:s0 to system_u:object_r:systemd_conf_t:s0
+        # - Would relabel /etc/systemd/journald.conf.d/forward-to-console.conf from system_u:object_r:etc_t:s0 to system_u:object_r:systemd_conf_t:s0
+        # - Would relabel /boot/lost+found from system_u:object_r:unlabeled_t:s0 to system_u:object_r:lost_found_t:s0' ']'
+        # - Would relabel /var/lib/systemd/home from system_u:object_r:init_var_lib_t:s0 to system_u:object_r:systemd_homed_library_dir_t:s0
+        #       - 39.20230916.1.1->41.20240928.10.1
+        #       - https://github.com/fedora-selinux/selinux-policy/commit/3ba70ae27d067f7edc0a52ff722511c5ada724f2
+        # - Would relabel /var/cache/systemd from system_u:object_r:var_t:s0 to system_u:object_r:systemd_cache_t:s0
+        #   Would relabel /var/cache/systemd/home from system_u:object_r:var_t:s0 to system_u:object_r:systemd_homed_cache_t:s0
+        #       - 38.20230322.1.0->42.20241023.91.0
+        #       - https://github.com/fedora-selinux/selinux-policy/commit/b08568ca696f14d3232adef6a291ebb0ec80ba46
+        #       - https://github.com/coreos/fedora-coreos-tracker/issues/1819
+        declare -A exceptions=(
+           ['/var/lib/cni']=1
+           ['/etc/selinux/targeted/semanage.read.LOCK']=1
+           ['/etc/selinux/targeted/semanage.trans.LOCK']=1
+           ['/etc/systemd/journald.conf.d']=1
+           ['/etc/systemd/journald.conf.d/forward-to-console.conf']=1
+           ['/boot/lost+found']=1
+           ['/var/lib/systemd/home']=1
+           ['/var/cache/systemd']=1
+           ['/var/cache/systemd/home']=1
+        )
+        paths="$(echo "${mislabeled}" | grep "Would relabel" | cut -d ' ' -f 3)"
+        found=""
+        while read -r path; do
+            # Add in a few temporary glob exceptions
+            # https://github.com/coreos/fedora-coreos-tracker/issues/1806
+            [[ "${path}" =~ /etc/selinux/targeted/active/ ]] && continue
+            if [[ "${exceptions[$path]:-noexception}" == 'noexception' ]]; then
+                echo "Unexpected mislabeled file found: ${path}"
+                found="1"
+            fi
+        done <<< "${paths}"
+        if [ "${found}" == "1" ];then
+            fatal "Some unexpected mislabeled files were found."
+        fi
+    fi
+    ok "Selinux sanity checks passed"
 }
 
 ok "Reached version: $version"
@@ -144,8 +244,14 @@ ok "Reached version: $version"
 # If so then we can exit with success!
 if vereq $version $target_version; then
     ok "Fully upgraded to $target_version"
-    # log bootupctl information for inspection where available
-    [ -f /usr/bin/bootupctl ] && /usr/bin/bootupctl status
+    # log bootupctl information for inspection and check the status output
+    state=$(/usr/bin/bootupctl status 2>&1)
+    echo "$state"
+    if ! echo "$state" | grep -q "CoreOS aleph version"; then
+        fatal "check bootupctl status output"
+    fi
+    # One last check!
+    selinux-sanity-check
     exit 0
 fi
 
@@ -169,36 +275,53 @@ fi
 case "$stream" in
     'next')
         verlt $version '35.20211119.1.0' && grab-gpg-keys
+        verlt $version '34.20210413.1.0' && move-to-cgroups-v2
         verlt $version '32.20200517.1.0' && fix-allow-downgrade
         verlt $version '32.20200505.1.0' && fix-update-url
         ;;
     'testing')
         verlt $version '35.20211119.2.0' && grab-gpg-keys
+        verlt $version '34.20210529.2.0' && move-to-cgroups-v2
         verlt $version '31.20200517.2.0' && fix-allow-downgrade
         verlt $version '31.20200505.2.0' && fix-update-url
         ;;
     'stable')
         verlt $version '35.20211119.3.0' && grab-gpg-keys
+        verlt $version '34.20210529.3.0' && move-to-cgroups-v2
         verlt $version '31.20200517.3.0' && fix-allow-downgrade
         verlt $version '31.20200505.3.0' && fix-update-url
         ;;
     *) fatal "unexpected stream: $stream";;
 esac
 
+# First, since coreos-fix-selinux-labels.service runs before zincati.service
+# let's wait until that service is finished before proceeding (and potentially
+# timing out below as a result of not waiting here). Note that if we are
+# running on an older release that doesn't have coreos-fix-selinux-labels.service
+# this is essentially a no-op.
+systemd-run --wait --property=After=coreos-fix-selinux-labels.service \
+    echo "Waited for coreos-fix-selinux-labels.service to finish"
+
 # If we have made it all the way to the last release then
 # we have one more test. We'll now rebase to the target
 # version, which should be in the compose OSTree repo.
 if vereq $version $last_release; then
     systemctl stop zincati
-    rpm-ostree rebase "fedora-compose:fedora/$(arch)/coreos/${target_stream}" $target_version
-    /tmp/autopkgtest-reboot reboot # execute the reboot
+    # Pull the ociarchive from the builds dir here because the
+    # containers aren't pushed to quay until the release job is run
+    # and that hasn't happened yet.
+    curl -L -o /srv/update.ociarchive \
+        "https://builds.coreos.fedoraproject.org/prod/streams/${target_stream}/builds/${target_version}/${arch}/fedora-coreos-${target_version}-ostree.${arch}.ociarchive"
+    rpm-ostree rebase "ostree-unverified-image:oci-archive:/srv/update.ociarchive"
+    rm /srv/update.ociarchive
+    /tmp/autopkgtest-reboot $version # execute the reboot
     sleep infinity
 fi
 
-# Restart Zincati if configuration was changed
-if [ "${need_zincati_restart}" == "true" ]; then
-    rpm-ostree cancel # in case anything was already in progress
-    systemctl restart zincati
+# Restart if configuration was changed
+if [ "${need_restart}" == "true" ]; then
+    /tmp/autopkgtest-reboot setup
+    sleep infinity
 fi
 
 # Watch the Zincati logs to see if it got a lead on a new update.
@@ -213,6 +336,10 @@ fi
 set -o pipefail
 
 
-# OK update has been initiated, prepare for reboot and sleep
-/tmp/autopkgtest-reboot-prepare reboot
-sleep infinity
+# OK update has been initiated, prepare for reboot and loop to show
+# status of zincati and rpm-ostreed
+/tmp/autopkgtest-reboot-prepare $version
+while true; do
+    sleep 20
+    systemctl status rpm-ostreed zincati --lines=0
+done

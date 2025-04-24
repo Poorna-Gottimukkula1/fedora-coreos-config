@@ -1,24 +1,62 @@
 # This file documents currently known-to-fail kola tests. It is consumed by
 # coreos-assembler to automatically skip some tests. For more information,
 # see: https://github.com/coreos/coreos-assembler/pull/866.
-- pattern: fcos.internet
-  tracker: https://github.com/coreos/coreos-assembler/pull/1478
-- pattern: podman.workflow
-  tracker: https://github.com/coreos/coreos-assembler/pull/1478
-- pattern: coreos.ignition.ssh.key
-  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1553
-  snooze: 2024-02-26
+- pattern: coreos.boot-mirror*
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1659
   warn: true
+  arches:
+    - ppc64le
+- pattern: skip-console-warnings
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1889
+  arches:
+    - ppc64le
+- pattern: ext.config.toolbox
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1908
+  snooze: 2025-04-14
+  warn: true
+  streams:
+    - rawhide
+- pattern: skip-console-warnings
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1924
   platforms:
-    - azure
-- pattern: ext.config.files.console-config
-  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1654
+    - openstack
   streams:
     - rawhide
-- pattern: ext.config.var-mount.scsi-id
-  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1670
-  snooze: 2024-02-29
+- pattern: ext.config.kdump.crash
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1925
+  snooze: 2025-04-30
   warn: true
+  arches:
+    - aarch64
   streams:
     - rawhide
-    - branched
+- pattern: kdump.crash.ssh
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1925
+  snooze: 2025-04-30
+  warn: true
+  arches:
+    - aarch64
+  streams:
+    - rawhide
+- pattern: kdump.crash.nfs
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1925
+  snooze: 2025-04-30
+  warn: true
+  arches:
+    - aarch64
+  streams:
+    - rawhide
+- pattern: ext.config.root-reprovision.*
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1926
+  snooze: 2025-05-06
+  arches:
+    - ppc64le
+  streams:
+    - rawhide
+- pattern: coreos.boot-mirror*
+  tracker: https://github.com/coreos/fedora-coreos-tracker/issues/1932
+  snooze: 2025-05-06
+  arches:
+    - x86_64
+  streams:
+    - rawhide

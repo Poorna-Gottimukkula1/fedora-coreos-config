@@ -9,15 +9,33 @@
 # for FCOS-specific packages (ignition, afterburn, etc.).
 
 packages:
-  coreos-installer:
-    evr: 0.21.0-1.fc41
+  dnf5:
+    evr: 5.2.11.0-1.fc43
     metadata:
-      bodhi: https://bodhi.fedoraproject.org/updates/FEDORA-2024-f5da825190
-      reason: https://github.com/coreos/fedora-coreos-tracker/issues/1674#issuecomment-1954790135
-      type: fast-track
-  coreos-installer-bootinfra:
-    evr: 0.21.0-1.fc41
+      reason: https://github.com/coreos/fedora-coreos-tracker/issues/1896
+      type: pin
+  libdnf5:
+    evr: 5.2.11.0-1.fc43
     metadata:
-      bodhi: https://bodhi.fedoraproject.org/updates/FEDORA-2024-f5da825190
-      reason: https://github.com/coreos/fedora-coreos-tracker/issues/1674#issuecomment-1954790135
-      type: fast-track
+      reason: https://github.com/coreos/fedora-coreos-tracker/issues/1896
+      type: pin
+  libdnf5-cli:
+    evr: 5.2.11.0-1.fc43
+    metadata:
+      reason: https://github.com/coreos/fedora-coreos-tracker/issues/1896
+      type: pin
+  rpm:
+    evr: 4.20.1-3.fc43
+    metadata:
+      reason: https://github.com/coreos/fedora-coreos-tracker/issues/1929
+      type: pin
+  rpm-libs:
+    evr: 4.20.1-3.fc43
+    metadata:
+      reason: https://github.com/coreos/fedora-coreos-tracker/issues/1929
+      type: pin
+  rpm-plugin-selinux:
+    evr: 4.20.1-3.fc43
+    metadata:
+      reason: https://github.com/coreos/fedora-coreos-tracker/issues/1929
+      type: pin

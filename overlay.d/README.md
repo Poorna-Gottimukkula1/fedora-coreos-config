@@ -24,14 +24,6 @@ https://bugzilla.redhat.com/show_bug.cgi?id=1700056
 
 Warning about `/etc/sysconfig`.
 
-14podman-v5
-------
-
-Warn about breaking changes [1] with Podman v5 and link the
-users to how they can adapt their existing nodes.
-
-[1] https://github.com/coreos/fedora-coreos-tracker/issues/1629
-
 15fcos
 ------
 
@@ -84,9 +76,3 @@ pre-existing LVM devices attached. See the tracker issue [1] for more
 information.
 
 [1] https://github.com/coreos/fedora-coreos-tracker/issues/1517
-
-40grub
-------
-
-Add in static grub configs that will be leveraged by bootupd when
-managing bootloaders. See https://github.com/coreos/bootupd/pull/543
