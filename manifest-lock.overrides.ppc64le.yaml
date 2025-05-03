@@ -1,21 +1,21 @@
 packages:
   kernel:
-    evra: 6.15.0-0.rc1.20250413git7cdabafc0012.21.fc43.ppc64le
+    evra: 6.15.0-0.rc0.20250404gite48e99b6edf4.11.fc43.ppc64le
     metadata:
       reason: https://github.com/coreos/fedora-coreos-tracker/issues/1926
       type: pin
   kernel-core:
-    evra: 6.15.0-0.rc1.20250413git7cdabafc0012.21.fc43.ppc64le
+    evra: 6.15.0-0.rc0.20250404gite48e99b6edf4.11.fc43.ppc64le
     metadata:
       reason: https://github.com/coreos/fedora-coreos-tracker/issues/1926
       type: pin
   kernel-modules:
-    evra: 6.15.0-0.rc1.20250413git7cdabafc0012.21.fc43.ppc64le
+    evra: 6.15.0-0.rc0.20250404gite48e99b6edf4.11.fc43.ppc64le
     metadata:
       reason: https://github.com/coreos/fedora-coreos-tracker/issues/1926
       type: pin
   kernel-modules-core:
-    evra: 6.15.0-0.rc1.20250413git7cdabafc0012.21.fc43.ppc64le
+    evra: 6.15.0-0.rc0.20250404gite48e99b6edf4.11.fc43.ppc64le
     metadata:
       reason: https://github.com/coreos/fedora-coreos-tracker/issues/1926
       type: pin
