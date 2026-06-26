@@ -27,7 +27,6 @@ derived_imagespec="containers-storage:${derivedimage}"
 arch=$(arch)
 
 build_base_image() {
-    # Take the existing ostree commit, and export it to a container image
     echo "=========================================="
     echo "Building base OCI archive"
     echo "=========================================="
@@ -37,6 +36,7 @@ build_base_image() {
     checksum=$(jq -r '.deployments[0].checksum' < status.json)
     v0=$(jq -r '.deployments[0].version' < status.json)
     imgref=$(jq -r '.deployments[0]["container-image-reference"]' < status.json)
+    rm -f ${baseimage}
     
     encapsulate_args=()
     if [[ "$imgref" != "null" ]]; then
@@ -84,7 +84,7 @@ build_derived_image() {
     echo "=========================================="
     
     cat > Containerfile << EOF
-FROM $baseimage
+FROM $imagespec
 RUN ls /etc/yum.repos.d/*.repo 2>/dev/null | xargs --no-run-if-empty sed -i s/enabled=1/enabled=0/
 RUN rpm-ostree override replace /tmp/buildcontext/*rpm && \
     rpm-ostree cleanup -m && \
@@ -98,7 +98,7 @@ EOF
     
     podman build --volume $PWD:/tmp/buildcontext:z -t "${derived_imagespec}" --squash .
     popd
-    ok "Derived OCI archive created at ${derived_baseimage}"
+    ok "Derived OCI archive created at ${derivedimage}"
 }
 
 # Read current state
@@ -114,7 +114,7 @@ case "${REBOOT_MARK}" in
     echo "BOOT 0: Initial setup"
     echo "=========================================="
     
-    # First thing, let's create the base and derived images
+    # Build base and derived OCI archives
     build_base_image
     build_derived_image
     
