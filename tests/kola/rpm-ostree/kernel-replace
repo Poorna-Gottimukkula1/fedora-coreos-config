@@ -1,10 +1,12 @@
 #!/bin/bash
 ## kola:
 ##   # Increase timeout since this test has a lot of I/O and involves rebasing
-##   timeoutMin: 20
+##   # Extra time for ppc64le due to container build diagnostics
+##   timeoutMin: 30
 ##   # We've seen some OOM when 1024M is used:
 ##   # https://github.com/coreos/fedora-coreos-tracker/issues/1506
-##   minMemory: 2048
+##   # Increased for ppc64le container builds
+##   minMemory: 4096
 ##   # We do a bunch of copies/rebuilds of the whole OS.
 ##   minDisk: 20
 ##   # Needs internet access as we fetch files from koji
@@ -47,13 +49,65 @@ derivedimage="localhost/coreos-derived:latest"
 derived_imagespec="containers-storage:${derivedimage}"
 arch=$(arch)
 
+# Enhanced diagnostic function for debugging container build issues
+# Especially useful for ppc64le troubleshooting
+diagnose_system() {
+    local stage="${1:-unknown}"
+    echo "========================================"
+    echo "=== System Diagnostics - Stage: $stage ==="
+    echo "========================================"
+    echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "Architecture: $(arch)"
+    echo ""
+    
+    echo "--- Memory Status ---"
+    free -h
+    echo ""
+    
+    echo "--- Disk Space ---"
+    df -h /var/tmp /var/lib/containers 2>/dev/null || df -h /var
+    echo ""
+    
+    echo "--- Podman Version ---"
+    podman --version || echo "Podman not available"
+    echo ""
+    
+    echo "--- Podman Storage Info ---"
+    podman info --format='{{.Store.GraphDriverName}}: {{.Store.GraphRoot}}' 2>/dev/null || echo "Podman info failed"
+    podman system df 2>/dev/null || echo "Podman system df failed"
+    echo ""
+    
+    echo "--- Container Images ---"
+    podman images 2>/dev/null || echo "No images or podman not ready"
+    echo ""
+    
+    echo "--- Process Memory Usage (Top 10) ---"
+    ps aux --sort=-%mem | head -11
+    echo ""
+    
+    echo "--- System Load ---"
+    uptime
+    echo ""
+    
+    echo "========================================"
+}
+
 
 build_base_image() {
+    echo "=== Building base image from current deployment ==="
+    diagnose_system "before_base_build"
+    
     # Take the existing ostree commit, and export it to a container image
     rpm-ostree status --json > status.json
     checksum=$(jq -r '.deployments[0].checksum' < status.json)
     v0=$(jq -r '.deployments[0].version' < status.json)
     imgref=$(jq -r '.deployments[0]["container-image-reference"]' < status.json)
+    
+    echo "Current deployment:"
+    echo "  Checksum: $checksum"
+    echo "  Version: $v0"
+    echo "  Image ref: $imgref"
+    
     encapsulate_args=()
     # A hack...if we're booted into a container, then we need to fake things out
     # for the merge commit to turn it back into an image.  What we *really* want
@@ -62,14 +116,26 @@ build_base_image() {
     if [[ "$imgref" != null ]]; then
       encapsulate_args+=("--label" "ostree.bootable=true")
     fi
+    
+    echo "Encapsulating ostree commit to container image..."
     ostree container encapsulate "${encapsulate_args[@]}" --repo=/ostree/repo ${checksum} "${imagespec}"
+    
+    echo "✅ Base image created successfully"
+    diagnose_system "after_base_build"
 }
 
 build_derived_image() {
+    echo "========================================="
+    echo "=== Building derived image with kernel replacement ==="
+    echo "========================================="
+    diagnose_system "before_derived_build"
+    
     # do the container build in a temporary context directory
     contextdir=$(mktemp -d)
+    echo "Build context directory: $contextdir"
     pushd ${contextdir}
 
+    echo "--- Downloading kernel RPMs ---"
     case "$OS_ID" in
       rhcos|scos|rhel|centos)
         # Use the matching CentOS Stream version based on RHEL/SCOS major version
@@ -85,11 +151,14 @@ build_derived_image() {
         dnf_opts="--repofrompath=tmp,${cs_mirror} --disablerepo=* --enablerepo tmp"
         kver=$(dnf repoquery $dnf_opts kernel --qf '%{EVR}' | \
                   grep -v "$(rpm -q kernel --qf '%{EVR}')" | tail -n1)
+        echo "Target kernel version: $kver"
         dnf download $dnf_opts --resolve kernel-{,core-,modules-,modules-core-,modules-extra-}$kver
         ;;
       fedora)
         VERSION_ID=$(. /etc/os-release; echo $VERSION_ID)
         previous_version_id=$((VERSION_ID - 1))
+        echo "Current Fedora version: $VERSION_ID"
+        echo "Downloading kernel from Fedora $previous_version_id"
         # Workaround https://github.com/coreos/fedora-coreos-tracker/issues/2113
         # with the skip_system_repo_lock=true setting in dnf configuration file.
         printf "[main]\nskip_system_repo_lock=true" > dnf_config
@@ -105,7 +174,17 @@ build_derived_image() {
 
     # we only want to query repos once but need the info on multiple boots, so write out state to /var
     echo "$kver" > /var/kola-kernel.evr
+    echo "✅ Kernel version to install: $kver"
+    echo ""
+    
+    echo "--- Downloaded RPMs ---"
+    ls -lh *.rpm
+    echo "Total size: $(du -sh . | cut -f1)"
+    echo ""
+    
+    diagnose_system "after_kernel_download"
 
+    echo "--- Creating Containerfile ---"
     cat > Containerfile << EOF
 FROM $baseimage
 # Disable yum repos since we are overriding local files and we don't
@@ -116,47 +195,224 @@ RUN rpm-ostree override replace /tmp/buildcontext/*rpm && \
     rpm-ostree cleanup -m && \
     ostree container commit
 EOF
-    podman build --volume $PWD:/tmp/buildcontext:z -t "${derived_imagespec}" --squash .
+    
+    echo "Containerfile contents:"
+    cat Containerfile
+    echo ""
+    
+    echo "========================================="
+    echo "=== Starting podman build ==="
+    echo "========================================="
+    echo "Build context: $PWD"
+    echo "Target image: ${derived_imagespec}"
+    echo "Architecture: $arch"
+    echo ""
+    
+    # Enhanced diagnostics and logging for ppc64le
+    if [[ "$arch" == "ppc64le" ]]; then
+        echo "⚠️  ppc64le architecture detected"
+        echo "⚠️  Enabling enhanced diagnostics and logging"
+        echo "⚠️  Build timeout: 900 seconds (15 minutes)"
+        echo "⚠️  Log file: /tmp/podman-build-ppc64le.log"
+        echo ""
+        
+        # Capture detailed build output
+        set +e  # Don't exit on error, we want to capture diagnostics
+        
+        echo "Starting build at: $(date '+%Y-%m-%d %H:%M:%S')"
+        timeout 900 podman build \
+            --log-level=debug \
+            --volume $PWD:/tmp/buildcontext:z \
+            -t "${derived_imagespec}" \
+            --squash \
+            . 2>&1 | tee /tmp/podman-build-ppc64le.log
+        
+        build_result=$?
+        echo "Build finished at: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Build exit code: $build_result"
+        echo ""
+        
+        set -e
+        
+        if [[ $build_result -ne 0 ]]; then
+            echo "========================================="
+            echo "❌ PODMAN BUILD FAILED"
+            echo "========================================="
+            echo "Exit code: $build_result"
+            echo ""
+            
+            if [[ $build_result -eq 124 ]]; then
+                echo "⚠️  Build TIMED OUT after 900 seconds"
+                echo "⚠️  This suggests the build is hanging or extremely slow"
+            fi
+            
+            echo "--- Post-failure diagnostics ---"
+            diagnose_system "after_build_failure"
+            
+            echo "--- Last 100 lines of build log ---"
+            tail -100 /tmp/podman-build-ppc64le.log || echo "Could not read build log"
+            echo ""
+            
+            echo "--- Searching for error patterns in build log ---"
+            echo "Errors:"
+            grep -i "error" /tmp/podman-build-ppc64le.log | tail -20 || echo "No errors found"
+            echo ""
+            echo "Failures:"
+            grep -i "fail" /tmp/podman-build-ppc64le.log | tail -20 || echo "No failures found"
+            echo ""
+            echo "Timeouts:"
+            grep -i "timeout" /tmp/podman-build-ppc64le.log | tail -20 || echo "No timeouts found"
+            echo ""
+            echo "Memory issues:"
+            grep -i "memory\|oom" /tmp/podman-build-ppc64le.log | tail -20 || echo "No memory issues found"
+            echo ""
+            
+            echo "--- Podman container status ---"
+            podman ps -a || echo "Could not list containers"
+            echo ""
+            
+            echo "--- Podman storage status ---"
+            podman system df || echo "Could not get storage info"
+            echo ""
+            
+            echo "========================================="
+            echo "Full build log saved to: /tmp/podman-build-ppc64le.log"
+            echo "Please review the log for detailed failure information"
+            echo "========================================="
+            
+            popd
+            exit 1
+        fi
+    else
+        # Standard build for non-ppc64le architectures
+        echo "Building for $arch architecture (standard mode)"
+        podman build --volume $PWD:/tmp/buildcontext:z -t "${derived_imagespec}" --squash .
+    fi
+    
+    echo ""
+    echo "✅ Derived image built successfully"
+    diagnose_system "after_derived_build"
+    
     popd
+    echo "Cleaned up build context: $contextdir"
 }
 
 case "${AUTOPKGTEST_REBOOT_MARK:-}" in
   "")
+    echo "========================================="
+    echo "=== Stage 0: Initial setup ==="
+    echo "========================================="
+    diagnose_system "initial"
+    
+    # Since we're switching OS update streams, turn off zincati
+    echo "Disabling zincati auto-updates..."
+    systemctl mask --now zincati
+    
     # First thing, let's create the base and derived images
     build_base_image
     build_derived_image
 
-    # Since we're switching OS update streams, turn off zincati
-    systemctl mask --now zincati
-
     # Rebase a few times to test the mechanisms
-    #
+    echo ""
+    echo "=== Testing rebase mechanisms ==="
+    
     # This one keeps --experimental, but we also test without it below
+    echo "Rebasing to base image (experimental)..."
     rpm-ostree rebase --experimental "ostree-unverified-image:${imagespec}"
+    
+    echo "Listing container images..."
     ostree container image list --repo=/ostree/repo | tee imglist.txt
+    
     # Test rebasing back to ostree https://github.com/coreos/rpm-ostree/issues/3677
+    echo "Rebasing back to ostree commit..."
     rpm-ostree rebase "$checksum"
+    
+    echo "Rebasing to base image again..."
     rpm-ostree rebase "ostree-unverified-image:${imagespec}"
+    
+    echo ""
+    echo "✅ Stage 0 complete, rebooting to stage 1..."
     /tmp/autopkgtest-reboot 1
     ;;
   1)
+    echo "========================================="
+    echo "=== Stage 1: Rebase to derived image ==="
+    echo "========================================="
+    diagnose_system "stage1_start"
+    
     # Now test rebasing to the derived kernel-replaced image
+    echo "rpm-ostree version:"
     rpm-ostree --version
+    echo ""
+    
+    echo "Rebasing to derived image with replaced kernel..."
     rpm-ostree rebase "ostree-unverified-image:$derived_imagespec"
+    
+    echo ""
+    echo "Container images in ostree repo:"
     ostree container image list --repo=/ostree/repo
+    
+    echo ""
+    echo "Current deployment status:"
+    rpm-ostree status
+    
+    echo ""
+    echo "✅ Stage 1 complete, rebooting to stage 2 for verification..."
     /tmp/autopkgtest-reboot 2
     ;;
   2)
+    echo "========================================="
+    echo "=== Stage 2: Verification after reboot ==="
+    echo "========================================="
+    diagnose_system "stage2_verification"
+    
     kver="$(cat /var/kola-kernel.evr).${arch}" # expected
     un=$(uname -r)                             # detected
+    
+    echo "Expected kernel: $kver"
+    echo "Running kernel:  $un"
+    echo ""
+    
     if test "$un" != "$kver"; then
-      echo "Expected kernel $kver but found $un"
+      echo "❌ FAILURE: Expected kernel $kver but found $un"
+      echo ""
+      echo "=== Deployment status ==="
+      rpm-ostree status
       exit 1
     else
-      echo "Kernel switch to $un was successful"
+      echo "✅ SUCCESS: Kernel switch to $un was successful"
     fi
-    test -f /usr/lib/modules/$kver/initramfs.img
-    test -f /usr/lib/modules/$kver/vmlinuz
+    
+    echo ""
+    echo "=== Verifying kernel files ==="
+    if test -f /usr/lib/modules/$kver/initramfs.img; then
+      echo "✅ Found: /usr/lib/modules/$kver/initramfs.img"
+      ls -lh /usr/lib/modules/$kver/initramfs.img
+    else
+      echo "❌ Missing: /usr/lib/modules/$kver/initramfs.img"
+      exit 1
+    fi
+    
+    if test -f /usr/lib/modules/$kver/vmlinuz; then
+      echo "✅ Found: /usr/lib/modules/$kver/vmlinuz"
+      ls -lh /usr/lib/modules/$kver/vmlinuz
+    else
+      echo "❌ Missing: /usr/lib/modules/$kver/vmlinuz"
+      exit 1
+    fi
+    
+    echo ""
+    echo "=== Final deployment status ==="
+    rpm-ostree status
+    
+    echo ""
+    echo "========================================="
+    echo "✅ TEST COMPLETED SUCCESSFULLY"
+    echo "========================================="
+    echo "Kernel replacement via derived container build succeeded"
+    echo "Architecture: $arch"
+    echo "Kernel version: $un"
+    echo "========================================="
     ;;
   *)
     echo "Unknown AUTOPKGTEST_REBOOT_MARK: ${AUTOPKGTEST_REBOOT_MARK:-}"
