@@ -36,7 +36,6 @@ build_base_image() {
     checksum=$(jq -r '.deployments[0].checksum' < status.json)
     v0=$(jq -r '.deployments[0].version' < status.json)
     imgref=$(jq -r '.deployments[0]["container-image-reference"]' < status.json)
-    rm -f ${baseimage}
     
     encapsulate_args=()
     if [[ "$imgref" != "null" ]]; then
@@ -84,7 +83,7 @@ build_derived_image() {
     echo "=========================================="
     
     cat > Containerfile << EOF
-FROM $imagespec
+FROM $baseimage
 RUN ls /etc/yum.repos.d/*.repo 2>/dev/null | xargs --no-run-if-empty sed -i s/enabled=1/enabled=0/
 RUN rpm-ostree override replace /tmp/buildcontext/*rpm && \
     rpm-ostree cleanup -m && \
