@@ -112,16 +112,20 @@ FROM $baseimage
 # want to reach out to the repos. This is done in a way such that if
 # there are no repo files (i.e. like on RHCOS) then it succeeds anyway.
 RUN ls /etc/yum.repos.d/*.repo 2>/dev/null | xargs --no-run-if-empty sed -i s/enabled=1/enabled=0/
-
-# Replace kernel and rebuild initramfs in a single RUN to avoid duplication
-# CRITICAL: Initramfs rebuild fixes BTF validation errors on ppc64le (and other architectures)
-# This ensures modules are regenerated with proper BTF metadata, fixing issues when
-# replacing kernels from RC builds or older kernels with unsorted/incompatible BTF.
-# See: https://github.com/coreos/fedora-coreos-tracker/issues/2115
 RUN rpm-ostree override replace /tmp/buildcontext/*rpm && \
-    rpm-ostree initramfs --enable --arg=--rebuild && \
     rpm-ostree cleanup -m && \
     ostree container commit
+
+# Diagnostic: Check what kernel modules are actually in the image
+RUN echo "=== Kernel packages installed ===" && \
+    rpm -q kernel kernel-core kernel-modules kernel-modules-core && \
+    echo "=== Kernel module directories ===" && \
+    ls -la /usr/lib/modules/ && \
+    ls -la /usr/lib/modules/*/ && \
+    echo "=== Sample module version check ===" && \
+    (modinfo -F vermagic /usr/lib/modules/*/kernel/net/netfilter/nfnetlink.ko.xz 2>/dev/null | head -5 || echo "nfnetlink module not found") && \
+    echo "=== Initramfs status ===" && \
+    (ls -lh /boot/ostree/*/initramfs-*.img 2>/dev/null || echo "No initramfs found in /boot/ostree")
 EOF
     podman build --volume $PWD:/tmp/buildcontext:z -t "${derived_imagespec}" --squash .
     popd
