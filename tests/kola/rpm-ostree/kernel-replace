@@ -191,7 +191,14 @@ FROM $baseimage
 # want to reach out to the repos. This is done in a way such that if
 # there are no repo files (i.e. like on RHCOS) then it succeeds anyway.
 RUN ls /etc/yum.repos.d/*.repo 2>/dev/null | xargs --no-run-if-empty sed -i s/enabled=1/enabled=0/
+
+# Replace kernel and rebuild initramfs in a single RUN to avoid duplication
+# CRITICAL: Initramfs rebuild fixes BTF validation errors on ppc64le (and other architectures)
+# This ensures modules are regenerated with proper BTF metadata, fixing issues when
+# replacing kernels from RC builds or older kernels with unsorted/incompatible BTF.
+# See: https://github.com/coreos/fedora-coreos-tracker/issues/2115
 RUN rpm-ostree override replace /tmp/buildcontext/*rpm && \
+    rpm-ostree initramfs --enable --arg=--rebuild && \
     rpm-ostree cleanup -m && \
     ostree container commit
 EOF
