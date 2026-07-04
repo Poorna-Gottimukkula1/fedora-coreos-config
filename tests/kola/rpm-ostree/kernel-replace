@@ -137,6 +137,13 @@ case "${AUTOPKGTEST_REBOOT_MARK:-}" in
     build_base_image
     build_derived_image
 
+    # ✅ BOOT 0 DEBUG - Check /boot state after image build
+    echo "=== BOOT0 DEBUG ===" | tee /tmp/boot0.debug.txt
+    df -h /boot | tee -a /tmp/boot0.debug.txt
+    df -h / | tee -a /tmp/boot0.debug.txt
+    findmnt /boot | tee -a /tmp/boot0.debug.txt
+    tune2fs -l /dev/vda3 | grep -E "Block count|Free blocks|Block size" | tee -a /tmp/boot0.debug.txt || true
+
     # Since we're switching OS update streams, turn off zincati
     systemctl mask --now zincati
 
@@ -153,13 +160,40 @@ case "${AUTOPKGTEST_REBOOT_MARK:-}" in
   1)
     # Now test rebasing to the derived kernel-replaced image
     rpm-ostree --version
+    
+    # ✅ BOOT 1 BEFORE REBASE DEBUG - Most important checkpoint
+    echo "=== BOOT1 BEFORE REBASE DEBUG ===" | tee /tmp/boot1.before.txt
+    df -h /boot | tee -a /tmp/boot1.before.txt
+    filefrag -v /boot/ostree/*/vmlinuz* 2>/dev/null | tee -a /tmp/boot1.before.txt || true
+    
     rpm-ostree rebase "ostree-unverified-image:$derived_imagespec"
+    
+    # ✅ BOOT 1 AFTER REBASE DEBUG - Critical corruption window
+    echo "=== BOOT1 AFTER REBASE DEBUG ===" | tee /tmp/boot1.after.txt
+    sync
+    sleep 2
+    sha256sum /boot/ostree/*/vmlinuz* 2>/dev/null | tee -a /tmp/boot1.after.txt || true
+    filefrag -v /boot/ostree/*/vmlinuz* 2>/dev/null | tee -a /tmp/boot1.after.txt || true
+    ls -R /boot/ostree | head -200 | tee -a /tmp/boot1.after.txt || true
+    
+    # 🔥 OPTIONAL: Force cache drop to ensure real disk read on next boot
+    echo 1 > /proc/sys/vm/drop_caches || true
+    
     ostree container image list --repo=/ostree/repo
     /tmp/autopkgtest-reboot 2
     ;;
   2)
     kver="$(cat /var/kola-kernel.evr).${arch}" # expected
     un=$(uname -r)                             # detected
+    
+    # ✅ BOOT 2 DEBUG - Check kernel state after reboot
+    echo "=== BOOT2 DEBUG ===" | tee /tmp/boot2.debug.txt
+    df -h /boot | tee -a /tmp/boot2.debug.txt
+    ls -lah /boot/ostree/*/ | tee -a /tmp/boot2.debug.txt || true
+    sha256sum /boot/ostree/*/vmlinuz* 2>/dev/null | tee -a /tmp/boot2.debug.txt || true
+    filefrag -v /boot/ostree/*/vmlinuz* 2>/dev/null | tee -a /tmp/boot2.debug.txt || true
+    dmesg | grep -iE "ext4|I/O error|enospc|zeroed|buffer" | tail -200 | tee -a /tmp/boot2.debug.txt || true
+    
     if test "$un" != "$kver"; then
       echo "Expected kernel $kver but found $un"
       exit 1
