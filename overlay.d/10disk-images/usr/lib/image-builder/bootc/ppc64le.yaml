@@ -19,7 +19,7 @@ partition_table:
       type: 8DA63339-0007-60C0-C436-083AC8230908
 
     # Extended Boot Loader partition
-    - size: "384 MiB"
+    - size: "512 MiB"
       type: BC13C2FF-59E6-4262-A352-B275FD6F7172
       payload_type: "filesystem"
       payload:
